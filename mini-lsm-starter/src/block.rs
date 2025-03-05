@@ -12,14 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 mod builder;
 mod iterator;
 
 pub use builder::BlockBuilder;
-use bytes::Bytes;
+use bytes::{BufMut, Bytes};
 pub use iterator::BlockIterator;
 
 /// A block is the smallest unit of read and caching in LSM tree. It is a collection of sorted key-value pairs.
@@ -32,11 +29,33 @@ impl Block {
     /// Encode the internal data to the data layout illustrated in the course
     /// Note: You may want to recheck if any of the expected field is missing from your output
     pub fn encode(&self) -> Bytes {
-        unimplemented!()
+        let mut data = self.data.clone();
+        for offset in &self.offsets {
+            data.put_u16(*offset);
+        }
+        data.put_u16(self.offsets.len() as u16);
+        Bytes::from(data)
     }
 
     /// Decode from the data layout, transform the input `data` to a single `Block`
     pub fn decode(data: &[u8]) -> Self {
-        unimplemented!()
+        let len = data.len();
+        let num_elements = Self::u8_to_u16(&data[len - 2..len]);
+        let mut offsets = Vec::with_capacity(num_elements as usize);
+        let offsets_start = len - 2 - (num_elements as usize) * 2;
+        for slot in (offsets_start..len - 2).step_by(2) {
+            offsets.push(Self::u8_to_u16(&data[slot..slot + 2]));
+        }
+        let data_vec = data[0..offsets_start].to_vec();
+
+        Self {
+            data: data_vec,
+            offsets,
+        }
+    }
+
+    fn u8_to_u16(data: &[u8]) -> u16 {
+        assert_eq!(data.len(), 2, "Length of u8 slice was not 2");
+        (data[0] as u16) << 8 | (data[1] as u16)
     }
 }
