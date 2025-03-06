@@ -104,23 +104,19 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
 
     fn next(&mut self) -> Result<()> {
         let current_key = self.current.as_ref().unwrap().1.key();
-        loop {
-            if let Some(mut inner) = self.iters.peek_mut() {
+        while let Some(mut inner) = self.iters.peek_mut() {
+            if !inner.1.is_valid() {
+                PeekMut::pop(inner);
+            } else if inner.1.key() > current_key {
+                break;
+            } else {
+                if let Err(e) = inner.1.next() {
+                    PeekMut::pop(inner);
+                    return Err(e);
+                }
                 if !inner.1.is_valid() {
                     PeekMut::pop(inner);
-                } else if inner.1.key() > current_key {
-                    break;
-                } else {
-                    if let Err(e) = inner.1.next() {
-                        PeekMut::pop(inner);
-                        return Err(e);
-                    }
-                    if !inner.1.is_valid() {
-                        PeekMut::pop(inner);
-                    }
                 }
-            } else {
-                break;
             }
         }
 

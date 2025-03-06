@@ -12,16 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
-
-use super::{BlockMeta, SsTable};
+use super::{BlockMeta, FileObject, SsTable};
+use crate::key::KeyVec;
 use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
+use anyhow::Result;
+use bytes::BufMut;
 
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
@@ -36,7 +34,14 @@ pub struct SsTableBuilder {
 impl SsTableBuilder {
     /// Create a builder based on target block size.
     pub fn new(block_size: usize) -> Self {
-        unimplemented!()
+        Self {
+            builder: BlockBuilder::new(block_size),
+            first_key: Vec::new(),
+            last_key: Vec::new(),
+            data: Vec::new(),
+            meta: Vec::new(),
+            block_size,
+        }
     }
 
     /// Adds a key-value pair to SSTable.
@@ -44,7 +49,27 @@ impl SsTableBuilder {
     /// Note: You should split a new block when the current block is full.(`std::mem::replace` may
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
-        unimplemented!()
+        // set first_key for the very first insert
+        if self.data.is_empty() && self.builder.is_empty() {
+            self.first_key = key.to_key_vec().into_inner();
+        }
+        if self.builder.add(key, value) {
+            self.last_key = key.to_key_vec().into_inner()
+        } else {
+            let mut new_builder = BlockBuilder::new(self.block_size);
+
+            // the first insert should always be successful
+            assert!(
+                new_builder.add(key, value),
+                "First insert into block builder failed"
+            );
+
+            let old_builder = std::mem::replace(&mut self.builder, new_builder);
+            self.write_block(old_builder);
+
+            self.first_key = key.to_key_vec().into_inner();
+            self.last_key = key.to_key_vec().into_inner();
+        }
     }
 
     /// Get the estimated size of the SSTable.
@@ -52,17 +77,55 @@ impl SsTableBuilder {
     /// Since the data blocks contain much more data than meta blocks, just return the size of data
     /// blocks here.
     pub fn estimated_size(&self) -> usize {
-        unimplemented!()
+        self.data.len()
     }
 
     /// Builds the SSTable and writes it to the given path. Use the `FileObject` structure to manipulate the disk objects.
     pub fn build(
-        self,
+        mut self,
         id: usize,
         block_cache: Option<Arc<BlockCache>>,
         path: impl AsRef<Path>,
     ) -> Result<SsTable> {
-        unimplemented!()
+        let last_block = std::mem::replace(&mut self.builder, BlockBuilder::new(self.block_size));
+        self.write_block(last_block);
+
+        let mut data = self.data.clone();
+        let meta_offset = data.len();
+        BlockMeta::encode_block_meta(&self.meta[..], &mut data);
+        data.put_u32(meta_offset as u32);
+        let file_object = FileObject::create(path.as_ref(), data)?;
+
+        let table = SsTable {
+            id,
+            block_cache,
+            first_key: self
+                .meta
+                .first()
+                .map(|meta| meta.first_key.clone())
+                .unwrap_or_default(),
+            last_key: self
+                .meta
+                .last()
+                .map(|meta| meta.last_key.clone())
+                .unwrap_or_default(),
+            bloom: None,
+            file: file_object,
+            block_meta: self.meta,
+            block_meta_offset: meta_offset,
+            max_ts: 0,
+        };
+        Ok(table)
+    }
+
+    fn write_block(&mut self, block: BlockBuilder) {
+        let meta = BlockMeta {
+            offset: self.data.len(),
+            first_key: KeyVec::from_vec(self.first_key.clone()).into_key_bytes(),
+            last_key: KeyVec::from_vec(self.last_key.clone()).into_key_bytes(),
+        };
+        self.data.append(&mut block.build().encode().to_vec());
+        self.meta.push(meta);
     }
 
     #[cfg(test)]
