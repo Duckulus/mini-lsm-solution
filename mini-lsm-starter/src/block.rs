@@ -56,6 +56,6 @@ impl Block {
 
     fn u8_to_u16(data: &[u8]) -> u16 {
         assert_eq!(data.len(), 2, "Length of u8 slice was not 2");
-        (data[0] as u16) << 8 | (data[1] as u16)
+        ((data[0] as u16) << 8) | (data[1] as u16)
     }
 }

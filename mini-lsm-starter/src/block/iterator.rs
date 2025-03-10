@@ -70,7 +70,7 @@ impl BlockIterator {
     /// Returns true if the iterator is valid.
     /// Note: You may want to make use of `key`
     pub fn is_valid(&self) -> bool {
-        self.key.len() > 0
+        !self.key.is_empty()
     }
 
     /// Seeks to the first key in the block.

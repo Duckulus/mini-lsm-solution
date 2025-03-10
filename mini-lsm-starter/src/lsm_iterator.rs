@@ -12,26 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
-use anyhow::{bail, Result};
-
+use crate::iterators::two_merge_iterator::TwoMergeIterator;
+use crate::key::{KeyBytes, KeySlice};
+use crate::table::SsTableIterator;
 use crate::{
     iterators::{merge_iterator::MergeIterator, StorageIterator},
     mem_table::MemTableIterator,
 };
+use anyhow::{bail, Result};
+use bytes::Bytes;
+use std::ops::Bound;
 
 /// Represents the internal type for an LSM iterator. This type will be changed across the course for multiple times.
-type LsmIteratorInner = MergeIterator<MemTableIterator>;
+type LsmIteratorInner =
+    TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>;
 
 pub struct LsmIterator {
     inner: LsmIteratorInner,
+    end_bound: Bound<Bytes>,
+    reached_end: bool,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(iter: LsmIteratorInner) -> Result<Self> {
-        let mut iter = Self { inner: iter };
+    pub(crate) fn new(iter: LsmIteratorInner, end_bound: Bound<Bytes>) -> Result<Self> {
+        let mut iter = Self {
+            inner: iter,
+            end_bound,
+            reached_end: false,
+        };
         while iter.inner.is_valid() && iter.inner.value().is_empty() {
             iter.next()?;
         }
@@ -43,7 +51,7 @@ impl StorageIterator for LsmIterator {
     type KeyType<'a> = &'a [u8];
 
     fn is_valid(&self) -> bool {
-        self.inner.is_valid()
+        !self.reached_end && self.inner.is_valid()
     }
 
     fn key(&self) -> &[u8] {
@@ -58,6 +66,24 @@ impl StorageIterator for LsmIterator {
         self.inner.next()?;
         while self.inner.is_valid() && self.inner.value().is_empty() {
             self.inner.next()?;
+        }
+
+        if self.inner.is_valid() {
+            // need to check end bound manually because SsTableIterator does not support ranges
+            let end = match &self.end_bound {
+                Bound::Included(bytes) => {
+                    KeySlice::from_slice(self.key())
+                        > KeyBytes::from_bytes(bytes.clone()).as_key_slice()
+                }
+                Bound::Excluded(bytes) => {
+                    KeySlice::from_slice(self.key())
+                        >= KeyBytes::from_bytes(bytes.clone()).as_key_slice()
+                }
+                Bound::Unbounded => false,
+            };
+            if end {
+                self.reached_end = true;
+            }
         }
         Ok(())
     }

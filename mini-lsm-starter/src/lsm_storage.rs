@@ -31,11 +31,14 @@ use crate::compact::{
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
 use crate::iterators::merge_iterator::MergeIterator;
+use crate::iterators::two_merge_iterator::TwoMergeIterator;
+use crate::iterators::StorageIterator;
+use crate::key::KeySlice;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
-use crate::mem_table::MemTable;
+use crate::mem_table::{map_bound, MemTable};
 use crate::mvcc::LsmMvccInner;
-use crate::table::SsTable;
+use crate::table::{SsTable, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -243,7 +246,7 @@ impl MiniLsm {
     }
 }
 
-pub(self) enum MemtableFetchResult {
+enum MemtableFetchResult {
     Deleted,
     Absent,
     Present(Bytes),
@@ -301,7 +304,10 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>> {
-        let state = self.state.read();
+        let state = {
+            let guard = self.state.read();
+            Arc::clone(&guard)
+        };
         match self.get_from_memtable(_key, state.memtable.clone())? {
             MemtableFetchResult::Deleted => return Ok(None),
             MemtableFetchResult::Present(bytes) => return Ok(Some(bytes)),
@@ -313,6 +319,20 @@ impl LsmStorageInner {
                 MemtableFetchResult::Deleted => return Ok(None),
                 MemtableFetchResult::Present(bytes) => return Ok(Some(bytes)),
                 _ => {}
+            }
+        }
+
+        let key = KeySlice::from_slice(_key);
+        for sst_id in &state.l0_sstables {
+            let sst = state.sstables.get(sst_id).unwrap().clone();
+            let iter = SsTableIterator::create_and_seek_to_key(sst, key)?;
+            if iter.is_valid() && iter.key() == key {
+                let value = iter.value();
+                return if value.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(Bytes::copy_from_slice(iter.value())))
+                };
             }
         }
         Ok(None)
@@ -407,14 +427,39 @@ impl LsmStorageInner {
         _lower: Bound<&[u8]>,
         _upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        let mut iters = Vec::new();
-        let state = self.state.read();
-        iters.push(Box::from(state.memtable.scan(_lower, _upper)));
+        let state = {
+            let guard = self.state.read();
+            Arc::clone(&guard)
+        };
+
+        let mut memtables = Vec::new();
+        memtables.push(Box::from(state.memtable.scan(_lower, _upper)));
         for memtable in &state.imm_memtables {
-            iters.push(Box::from(memtable.scan(_lower, _upper)));
+            memtables.push(Box::from(memtable.scan(_lower, _upper)));
         }
-        let merge_iter = MergeIterator::create(iters);
-        let lsm_iter = LsmIterator::new(merge_iter)?;
+        let merge_iter = MergeIterator::create(memtables);
+
+        let mut ssts = Vec::new();
+        for sst_id in &state.l0_sstables {
+            let table = state.sstables.get(sst_id).unwrap();
+            let mut iter = SsTableIterator::create_and_seek_to_first(table.clone())?;
+            match _lower {
+                Bound::Included(slice) => iter.seek_to_key(KeySlice::from_slice(slice))?,
+                Bound::Excluded(slice) => {
+                    let key = KeySlice::from_slice(slice);
+                    iter.seek_to_key(key)?;
+                    if iter.is_valid() && iter.key() == key {
+                        iter.next()?;
+                    }
+                }
+                Bound::Unbounded => {}
+            };
+            ssts.push(Box::from(iter));
+        }
+        let sst_iter = MergeIterator::create(ssts);
+
+        let combined = TwoMergeIterator::create(merge_iter, sst_iter)?;
+        let lsm_iter = LsmIterator::new(combined, map_bound(_upper))?;
         Ok(FusedIterator::new(lsm_iter))
     }
 }
