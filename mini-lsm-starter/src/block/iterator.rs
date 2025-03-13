@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
-
 use crate::key::{KeySlice, KeyVec};
+use bytes::BufMut;
+use std::sync::Arc;
 
 use super::Block;
 
@@ -84,15 +84,17 @@ impl BlockIterator {
         assert!(index < self.block.offsets.len(), "Index out of bounds");
         let offset = self.block.offsets[index] as usize;
         let block = self.block.clone();
-        let key_len = Block::u8_to_u16(&block.data[offset..offset + 2]) as usize;
-        let key: &[u8] = &block.data[offset + 2..offset + 2 + key_len];
-        let value_len =
-            Block::u8_to_u16(&block.data[offset + 2 + key_len..offset + 2 + key_len + 2]) as usize;
-        self.key = KeyVec::from_vec(key.to_vec());
-        self.value_range = (
-            (offset + 2 + key_len + 2),
-            (offset + 2 + key_len + 2 + value_len),
-        );
+
+        let mut key: Vec<u8> = Vec::new();
+        let overlap = Block::u8_to_u16(&block.data[offset..offset + 2]) as usize;
+        let rest = Block::u8_to_u16(&block.data[offset + 2..offset + 4]) as usize;
+        key.put(&self.first_key.for_testing_key_ref()[0..overlap]);
+        key.put(&block.data[offset + 4..offset + 4 + rest]);
+        self.key = KeyVec::from_vec(key);
+        let value_start = offset + 4 + rest;
+
+        let value_len = Block::u8_to_u16(&block.data[value_start..value_start + 2]) as usize;
+        self.value_range = ((value_start + 2), (value_start + 2 + value_len));
     }
 
     /// Move to the next key in the block.
