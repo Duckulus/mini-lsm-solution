@@ -357,13 +357,20 @@ impl LsmStorageInner {
             }
         }
 
-        let mut l1_ssts = Vec::new();
-        for sst_id in &state.levels[0].1 {
-            l1_ssts.push(state.sstables.get(sst_id).unwrap().clone());
-        }
-        let l1_iter = SstConcatIterator::create_and_seek_to_key(l1_ssts, key)?;
-        if l1_iter.is_valid() && l1_iter.key() == key && !l1_iter.value().is_empty() {
-            return Ok(Some(Bytes::copy_from_slice(l1_iter.value())));
+        for level in &state.levels {
+            let mut ssts = Vec::new();
+            for sst_id in &level.1 {
+                ssts.push(state.sstables.get(sst_id).unwrap().clone());
+            }
+            let level_iter = SstConcatIterator::create_and_seek_to_key(ssts, key)?;
+            if level_iter.is_valid() && level_iter.key() == key {
+                let value = level_iter.value();
+                return if value.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(Bytes::copy_from_slice(value)))
+                };
+            }
         }
         Ok(None)
     }
@@ -522,27 +529,32 @@ impl LsmStorageInner {
         }
         let l0_sst_iter = MergeIterator::create(l0_ssts);
 
-        let mut l1_ssts = Vec::new();
-        for sst_id in &state.levels[0].1 {
-            l1_ssts.push(state.sstables.get(sst_id).unwrap().clone());
-        }
-        let l1_sst_iter = match _lower {
-            Bound::Included(key) => {
-                SstConcatIterator::create_and_seek_to_key(l1_ssts, KeySlice::from_slice(key))?
+        let mut level_iters = Vec::new();
+        for level in &state.levels {
+            let mut ssts = Vec::new();
+            for sst_id in &level.1 {
+                ssts.push(state.sstables.get(sst_id).unwrap().clone());
             }
-            Bound::Excluded(key) => {
-                let mut iter =
-                    SstConcatIterator::create_and_seek_to_key(l1_ssts, KeySlice::from_slice(key))?;
-                if iter.is_valid() && iter.key() == KeySlice::from_slice(key) {
-                    iter.next()?;
+            let level_iter = match _lower {
+                Bound::Included(key) => {
+                    SstConcatIterator::create_and_seek_to_key(ssts, KeySlice::from_slice(key))?
                 }
-                iter
-            }
-            Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(l1_ssts)?,
-        };
+                Bound::Excluded(key) => {
+                    let mut iter =
+                        SstConcatIterator::create_and_seek_to_key(ssts, KeySlice::from_slice(key))?;
+                    if iter.is_valid() && iter.key() == KeySlice::from_slice(key) {
+                        iter.next()?;
+                    }
+                    iter
+                }
+                Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(ssts)?,
+            };
+            level_iters.push(Box::from(level_iter));
+        }
+        let level_merge_iter = MergeIterator::create(level_iters);
 
         let combined = TwoMergeIterator::create(merge_iter, l0_sst_iter)?;
-        let combined = TwoMergeIterator::create(combined, l1_sst_iter)?;
+        let combined = TwoMergeIterator::create(combined, level_merge_iter)?;
         let lsm_iter = LsmIterator::new(combined, map_bound(_upper))?;
         Ok(FusedIterator::new(lsm_iter))
     }
