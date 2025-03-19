@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(unused_variables)]
+#![allow(dead_code)]
+
 mod leveled;
 mod simple_leveled;
 mod tiered;
@@ -201,6 +204,13 @@ impl LsmStorageInner {
                 let lower_iter = create_concat_iter_from_ids(&state, &task.lower_level_sst_ids)?;
                 self.gen_ssts_from_iter(TwoMergeIterator::create(upper_iter, lower_iter)?)
             }
+        } else if let CompactionTask::Tiered(task) = _task {
+            let mut iters = Vec::new();
+            for tier in &task.tiers {
+                let iter = create_concat_iter_from_ids(&state, &tier.1)?;
+                iters.push(Box::from(iter));
+            }
+            self.gen_ssts_from_iter(MergeIterator::create(iters))
         } else {
             unimplemented!();
         }
