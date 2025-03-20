@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)]
-#![allow(dead_code)]
-
 mod leveled;
 mod simple_leveled;
 mod tiered;
@@ -185,34 +182,46 @@ impl LsmStorageInner {
 
     fn compact(&self, _task: &CompactionTask) -> Result<Vec<Arc<SsTable>>> {
         let state = self.state.read().as_ref().clone();
+        match _task {
+            CompactionTask::ForceFullCompaction {
+                l0_sstables,
+                l1_sstables,
+            } => {
+                let l0_merge_iter = create_merge_iter_from_ids(&state, l0_sstables)?;
+                let l1_iter = create_concat_iter_from_ids(&state, l1_sstables)?;
+                self.gen_ssts_from_iter(TwoMergeIterator::create(l0_merge_iter, l1_iter)?)
+            }
+            CompactionTask::Simple(SimpleLeveledCompactionTask {
+                upper_level,
+                upper_level_sst_ids,
+                lower_level_sst_ids,
+                ..
+            })
+            | CompactionTask::Leveled(LeveledCompactionTask {
+                upper_level,
+                upper_level_sst_ids,
+                lower_level_sst_ids,
+                ..
+            }) => {
+                if upper_level.is_some() {
+                    let upper_iter = create_concat_iter_from_ids(&state, upper_level_sst_ids)?;
+                    let lower_iter = create_concat_iter_from_ids(&state, lower_level_sst_ids)?;
+                    self.gen_ssts_from_iter(TwoMergeIterator::create(upper_iter, lower_iter)?)
+                } else {
+                    let upper_iter = create_merge_iter_from_ids(&state, upper_level_sst_ids)?;
+                    let lower_iter = create_concat_iter_from_ids(&state, lower_level_sst_ids)?;
+                    self.gen_ssts_from_iter(TwoMergeIterator::create(upper_iter, lower_iter)?)
+                }
+            }
+            CompactionTask::Tiered(task) => {
+                let mut iters = Vec::new();
+                for tier in &task.tiers {
+                    let iter = create_concat_iter_from_ids(&state, &tier.1)?;
+                    iters.push(Box::from(iter));
+                }
 
-        if let CompactionTask::ForceFullCompaction {
-            l0_sstables,
-            l1_sstables,
-        } = _task
-        {
-            let l0_merge_iter = create_merge_iter_from_ids(&state, l0_sstables)?;
-            let l1_iter = create_concat_iter_from_ids(&state, l1_sstables)?;
-            self.gen_ssts_from_iter(TwoMergeIterator::create(l0_merge_iter, l1_iter)?)
-        } else if let CompactionTask::Simple(task) = _task {
-            if task.upper_level.is_some() {
-                let upper_iter = create_concat_iter_from_ids(&state, &task.upper_level_sst_ids)?;
-                let lower_iter = create_concat_iter_from_ids(&state, &task.lower_level_sst_ids)?;
-                self.gen_ssts_from_iter(TwoMergeIterator::create(upper_iter, lower_iter)?)
-            } else {
-                let upper_iter = create_merge_iter_from_ids(&state, &task.upper_level_sst_ids)?;
-                let lower_iter = create_concat_iter_from_ids(&state, &task.lower_level_sst_ids)?;
-                self.gen_ssts_from_iter(TwoMergeIterator::create(upper_iter, lower_iter)?)
+                self.gen_ssts_from_iter(MergeIterator::create(iters))
             }
-        } else if let CompactionTask::Tiered(task) = _task {
-            let mut iters = Vec::new();
-            for tier in &task.tiers {
-                let iter = create_concat_iter_from_ids(&state, &tier.1)?;
-                iters.push(Box::from(iter));
-            }
-            self.gen_ssts_from_iter(MergeIterator::create(iters))
-        } else {
-            unimplemented!();
         }
     }
 
