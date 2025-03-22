@@ -16,6 +16,7 @@ mod leveled;
 mod simple_leveled;
 mod tiered;
 
+use std::fs::File;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,6 +26,7 @@ use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
 use crate::key::KeySlice;
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 use anyhow::Result;
 pub use leveled::{LeveledCompactionController, LeveledCompactionOptions, LeveledCompactionTask};
@@ -242,7 +244,7 @@ impl LsmStorageInner {
             l1_sstables: l1.clone(),
         };
 
-        let new_tables = self.compact(&task)?;
+        let new_ssts = self.compact(&task)?;
         let mut tables_to_delete = Vec::new();
         {
             let _state_lock = self.state_lock.lock();
@@ -257,7 +259,7 @@ impl LsmStorageInner {
 
             snapshot.levels[0] = (
                 1,
-                new_tables
+                new_ssts
                     .iter()
                     .map(|sst| sst.sst_id())
                     .collect::<Vec<usize>>(),
@@ -265,11 +267,19 @@ impl LsmStorageInner {
             for id in l1 {
                 tables_to_delete.push(snapshot.sstables.remove(&id).unwrap());
             }
-            for sst in new_tables {
+            for sst in &new_ssts {
                 snapshot.sstables.insert(sst.sst_id(), sst.clone());
             }
 
             *state = Arc::new(snapshot);
+            let sst_ids: Vec<_> = new_ssts.iter().map(|sst| sst.sst_id()).collect();
+            for id in &sst_ids {
+                File::open(self.path_of_sst(*id))?.sync_all()?;
+            }
+            self.sync_dir()?;
+            if let Some(manifest) = &self.manifest {
+                manifest.add_record(&_state_lock, ManifestRecord::Compaction(task, sst_ids))?;
+            }
         }
         for table in tables_to_delete {
             std::fs::remove_file(self.path_of_sst(table.sst_id()))?;
@@ -313,7 +323,17 @@ impl LsmStorageInner {
             }
 
             *state = Arc::new(new_state);
+
+            let sst_ids: Vec<_> = new_ssts.iter().map(|sst| sst.sst_id()).collect();
+            for id in &sst_ids {
+                File::open(self.path_of_sst(*id))?.sync_all()?;
+            }
+            self.sync_dir()?;
+            if let Some(manifest) = &self.manifest {
+                manifest.add_record(&_state_lock, ManifestRecord::Compaction(task, sst_ids))?;
+            }
         }
+
         for table in tables_to_delete {
             std::fs::remove_file(self.path_of_sst(table.sst_id()))?;
         }

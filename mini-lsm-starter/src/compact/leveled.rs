@@ -197,11 +197,13 @@ impl LeveledCompactionController {
             lower.remove(idx.unwrap());
         }
         lower.extend_from_slice(_output);
-        lower.sort_by(|a, b| {
-            snapshot.sstables[a]
-                .first_key()
-                .cmp(snapshot.sstables[b].first_key())
-        });
+        if !_in_recovery {
+            lower.sort_by(|a, b| {
+                snapshot.sstables[a]
+                    .first_key()
+                    .cmp(snapshot.sstables[b].first_key())
+            });
+        }
 
         (snapshot, ssts_to_delete)
     }

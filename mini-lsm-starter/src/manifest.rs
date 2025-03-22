@@ -15,7 +15,8 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -38,11 +39,27 @@ pub enum ManifestRecord {
 
 impl Manifest {
     pub fn create(_path: impl AsRef<Path>) -> Result<Self> {
-        unimplemented!()
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(_path)?;
+        Ok(Self {
+            file: Arc::new(Mutex::new(file)),
+        })
     }
 
     pub fn recover(_path: impl AsRef<Path>) -> Result<(Self, Vec<ManifestRecord>)> {
-        unimplemented!()
+        let mut file = OpenOptions::new().read(true).write(true).open(_path)?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)?;
+        let iter = serde_json::Deserializer::from_slice(&buf).into_iter::<ManifestRecord>();
+        let mut records = Vec::new();
+        for record in iter {
+            records.push(record?);
+        }
+        let file = Arc::new(Mutex::new(file));
+        Ok((Self { file }, records))
     }
 
     pub fn add_record(
@@ -54,6 +71,11 @@ impl Manifest {
     }
 
     pub fn add_record_when_init(&self, _record: ManifestRecord) -> Result<()> {
-        unimplemented!()
+        let json = serde_json::to_vec(&_record)?;
+
+        let mut guard = self.file.lock();
+        guard.write_all(&json)?;
+        guard.sync_all()?;
+        Ok(())
     }
 }
