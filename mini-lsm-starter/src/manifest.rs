@@ -21,6 +21,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
+use bytes::{Buf, BufMut};
 use parking_lot::{Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
@@ -53,10 +54,16 @@ impl Manifest {
         let mut file = OpenOptions::new().read(true).write(true).open(_path)?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
-        let iter = serde_json::Deserializer::from_slice(&buf).into_iter::<ManifestRecord>();
+        let mut buf = &buf[..];
         let mut records = Vec::new();
-        for record in iter {
-            records.push(record?);
+        while buf.has_remaining() {
+            let len = buf.get_u16() as usize;
+            let data = &buf[..len];
+            buf.advance(len);
+            let checksum = buf.get_u32();
+            assert_eq!(crc32fast::hash(data), checksum);
+            let record = serde_json::de::from_slice::<ManifestRecord>(data)?;
+            records.push(record);
         }
         let file = Arc::new(Mutex::new(file));
         Ok((Self { file }, records))
@@ -71,10 +78,16 @@ impl Manifest {
     }
 
     pub fn add_record_when_init(&self, _record: ManifestRecord) -> Result<()> {
-        let json = serde_json::to_vec(&_record)?;
+        let mut buf: Vec<u8> = Vec::new();
+        let mut json = serde_json::to_vec(&_record)?;
+        let checksum = crc32fast::hash(&json);
+        let len = json.len();
+        buf.put_u16(len as u16);
+        buf.append(&mut json);
+        buf.put_u32(checksum);
 
         let mut guard = self.file.lock();
-        guard.write_all(&json)?;
+        guard.write_all(&buf)?;
         guard.sync_all()?;
         Ok(())
     }

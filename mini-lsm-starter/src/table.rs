@@ -19,14 +19,13 @@ pub(crate) mod bloom;
 mod builder;
 mod iterator;
 
+use anyhow::{anyhow, Result};
+pub use builder::SsTableBuilder;
+use bytes::{Buf, BufMut};
+pub use iterator::SsTableIterator;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
-
-use anyhow::{anyhow, Result};
-pub use builder::SsTableBuilder;
-use bytes::{Buf, BufMut, Bytes};
-pub use iterator::SsTableIterator;
 
 use crate::block::Block;
 use crate::key::{KeyBytes, KeySlice};
@@ -49,6 +48,7 @@ impl BlockMeta {
     /// You may add extra fields to the buffer,
     /// in order to help keep track of `first_key` when decoding from the same buffer in the future.
     pub fn encode_block_meta(block_meta: &[BlockMeta], buf: &mut Vec<u8>) {
+        let start = buf.len();
         for meta in block_meta {
             buf.put_u32(meta.offset as u32);
             buf.put_u16(meta.first_key.len() as u16);
@@ -56,17 +56,23 @@ impl BlockMeta {
             buf.put_u16(meta.last_key.len() as u16);
             buf.put(meta.last_key.clone().into_inner());
         }
+        let checksum = crc32fast::hash(&buf[start..]);
+        buf.put_u32(checksum);
     }
 
     /// Decode block meta from a buffer.
-    pub fn decode_block_meta(mut buf: impl Buf) -> Vec<BlockMeta> {
+    pub fn decode_block_meta(buf: &[u8]) -> Vec<BlockMeta> {
         let mut metas = Vec::new();
-        while buf.remaining() > 0 {
-            let offset = buf.get_u32() as usize;
-            let first_key_len = buf.get_u16();
-            let first_key = KeyBytes::from_bytes(buf.copy_to_bytes(first_key_len as usize));
-            let last_key_len = buf.get_u16();
-            let last_key = KeyBytes::from_bytes(buf.copy_to_bytes(last_key_len as usize));
+        let mut data = &buf[0..buf.len() - 4];
+        let meta_checksum = (&buf[buf.len() - 4..buf.len()]).get_u32();
+        assert_eq!(crc32fast::hash(data), meta_checksum);
+
+        while data.has_remaining() {
+            let offset = data.get_u32() as usize;
+            let first_key_len = data.get_u16();
+            let first_key = KeyBytes::from_bytes(data.copy_to_bytes(first_key_len as usize));
+            let last_key_len = data.get_u16();
+            let last_key = KeyBytes::from_bytes(data.copy_to_bytes(last_key_len as usize));
             metas.push(BlockMeta {
                 offset,
                 first_key,
@@ -143,7 +149,7 @@ impl SsTable {
 
         let meta_offset = file.read(bloom_offset - 4, 4)?.as_slice().get_u32() as u64;
         let meta_bytes = file.read(meta_offset, bloom_offset - 4 - meta_offset)?;
-        let metas = BlockMeta::decode_block_meta(Bytes::from(meta_bytes));
+        let metas = BlockMeta::decode_block_meta(&meta_bytes);
 
         let first_key = metas
             .first()
@@ -198,7 +204,9 @@ impl SsTable {
         };
         let block_bytes = self
             .file
-            .read(block_offset as u64, (next_offset - block_offset) as u64)?;
+            .read(block_offset as u64, (next_offset - block_offset - 4) as u64)?;
+        let block_checksum = (&self.file.read(next_offset as u64 - 4, 4)?[..]).get_u32();
+        assert_eq!(crc32fast::hash(&block_bytes), block_checksum);
         let block = Block::decode(block_bytes.as_slice());
         Ok(Arc::new(block))
     }

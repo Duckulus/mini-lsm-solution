@@ -557,25 +557,36 @@ impl LsmStorageInner {
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
     pub fn write_batch<T: AsRef<[u8]>>(&self, _batch: &[WriteBatchRecord<T>]) -> Result<()> {
-        unimplemented!()
-    }
-
-    /// Put a key-value pair into the storage by writing into the current memtable.
-    pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        self.state.read().memtable.put(_key, _value)?;
-        if self.state.read().memtable.approximate_size() >= self.options.target_sst_size {
-            let state_lock = &self.state_lock.lock();
-            // check again with lock to ensure no 2 threads try to freeze at the same time
+        for record in _batch {
+            match record {
+                WriteBatchRecord::Put(k, v) => {
+                    self.state.read().memtable.put(k.as_ref(), v.as_ref())?;
+                }
+                WriteBatchRecord::Del(k) => {
+                    self.state.read().memtable.put(k.as_ref(), &[])?;
+                }
+            }
             if self.state.read().memtable.approximate_size() >= self.options.target_sst_size {
-                self.force_freeze_memtable(state_lock)?;
+                let state_lock = &self.state_lock.lock();
+                // check again with lock to ensure no 2 threads try to freeze at the same time
+                if self.state.read().memtable.approximate_size() >= self.options.target_sst_size {
+                    self.force_freeze_memtable(state_lock)?;
+                }
             }
         }
         Ok(())
     }
 
+    /// Put a key-value pair into the storage by writing into the current memtable.
+    pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
+        self.write_batch(&[WriteBatchRecord::Put(_key, _value)])?;
+        Ok(())
+    }
+
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, _key: &[u8]) -> Result<()> {
-        self.put(_key, &[])
+        self.write_batch(&[WriteBatchRecord::Del(_key)])?;
+        Ok(())
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {

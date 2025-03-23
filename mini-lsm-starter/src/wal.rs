@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::{Buf, BufMut, Bytes};
+use crc32fast::Hasher;
 use crossbeam_skiplist::SkipMap;
 use parking_lot::Mutex;
 
@@ -47,12 +48,19 @@ impl Wal {
         let data = file.read_to_end(&mut buf)?;
         let mut data = &buf[..];
         while data.has_remaining() {
+            let mut hasher = Hasher::new();
             let key_len = data.get_u16() as usize;
+            hasher.update(&(key_len as u16).to_be_bytes());
             let key = Bytes::copy_from_slice(&data[..key_len]);
+            hasher.update(&data[..key_len]);
             data.advance(key_len);
             let value_len = data.get_u16() as usize;
+            hasher.update(&(value_len as u16).to_be_bytes());
             let value = Bytes::copy_from_slice(&data[..value_len]);
+            hasher.update(&data[..value_len]);
             data.advance(value_len);
+            let checksum = data.get_u32();
+            assert_eq!(hasher.finalize(), checksum);
             _skiplist.insert(key, value);
         }
         Ok(Self {
@@ -67,6 +75,8 @@ impl Wal {
         buf.put_slice(_key);
         buf.put_u16(_value.len() as u16);
         buf.put_slice(_value);
+        let checksum = crc32fast::hash(&buf);
+        buf.put_u32(checksum);
         file.write_all(&buf)?;
         Ok(())
     }

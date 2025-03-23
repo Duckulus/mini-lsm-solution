@@ -15,7 +15,7 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
 use anyhow::Result;
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 /// Implements a bloom filter
 pub struct Bloom {
@@ -61,8 +61,11 @@ impl<T: AsMut<[u8]>> BitSliceMut for T {
 impl Bloom {
     /// Decode a bloom filter
     pub fn decode(buf: &[u8]) -> Result<Self> {
-        let filter = &buf[..buf.len() - 1];
-        let k = buf[buf.len() - 1];
+        let bloom_data = &buf[..buf.len() - 4];
+        let bloom_checksum = (&buf[buf.len() - 4..]).get_u32();
+        assert_eq!(crc32fast::hash(bloom_data), bloom_checksum);
+        let filter = &bloom_data[..bloom_data.len() - 1];
+        let k = bloom_data[bloom_data.len() - 1];
         Ok(Self {
             filter: filter.to_vec().into(),
             k,
@@ -71,8 +74,12 @@ impl Bloom {
 
     /// Encode a bloom filter
     pub fn encode(&self, buf: &mut Vec<u8>) {
-        buf.extend(&self.filter);
-        buf.put_u8(self.k);
+        let mut bloom_data: Vec<u8> = Vec::new();
+        bloom_data.extend(&self.filter);
+        bloom_data.put_u8(self.k);
+        let checksum = crc32fast::hash(&bloom_data);
+        buf.append(&mut bloom_data);
+        buf.put_u32(checksum);
     }
 
     /// Get bloom filter bits per key from entries count and FPR

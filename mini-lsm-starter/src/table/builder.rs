@@ -138,7 +138,10 @@ impl SsTableBuilder {
             first_key: KeyVec::from_vec(self.first_key.clone()).into_key_bytes(),
             last_key: KeyVec::from_vec(self.last_key.clone()).into_key_bytes(),
         };
-        self.data.append(&mut block.build().encode().to_vec());
+        let mut block_data = block.build().encode().to_vec();
+        let checksum = crc32fast::hash(&block_data);
+        self.data.append(&mut block_data);
+        self.data.put_u32(checksum);
         self.meta.push(meta);
     }
 
