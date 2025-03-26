@@ -44,7 +44,7 @@ impl BlockBuilder {
     /// Adds a key-value pair to the block. Returns false when the block is full.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        let expected_size = key.len() + value.len() + 2 + 2 + 2;
+        let expected_size = key.raw_len() + value.len() + 2 + 2 + 2;
         if !self.data.is_empty()
             && self.data.len() + expected_size + self.offsets.len() * 2 + 2 > self.block_size
         {
@@ -54,11 +54,13 @@ impl BlockBuilder {
         self.offsets.push(self.data.len() as u16);
 
         let overlap = self.common_prefix_length(key);
-        let rest = &key.for_testing_key_ref()[overlap..key.len()];
-        assert_eq!(key.len() - overlap, rest.len());
+        let rest = &key.key_ref()[overlap..key.key_len()];
+        assert_eq!(key.key_len() - overlap, rest.len());
         self.data.put_u16(overlap as u16);
         self.data.put_u16(rest.len() as u16);
         self.data.put_slice(rest);
+
+        self.data.put_u64(key.ts());
 
         self.data.put_u16(value.len() as u16);
         self.data.put_slice(value);
@@ -66,13 +68,13 @@ impl BlockBuilder {
         // first key needs to be set after computing common prefix length
         // or else the key gets lost to compression because it overlaps itself
         if self.first_key.is_empty() {
-            self.first_key = KeyVec::from_vec(Vec::from(key.into_inner()));
+            self.first_key = key.to_key_vec();
         }
         true
     }
 
     fn common_prefix_length(&self, key: KeySlice) -> usize {
-        let len = min(self.first_key.len(), key.len());
+        let len = min(self.first_key.key_len(), key.key_len());
         for i in 0..len {
             if self.first_key.for_testing_key_ref()[i] != key.for_testing_key_ref()[i] {
                 return i;

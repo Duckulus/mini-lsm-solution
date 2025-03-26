@@ -25,8 +25,8 @@ use bytes::BufMut;
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
     builder: BlockBuilder,
-    first_key: Vec<u8>,
-    last_key: Vec<u8>,
+    first_key: KeyVec,
+    last_key: KeyVec,
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
@@ -38,8 +38,8 @@ impl SsTableBuilder {
     pub fn new(block_size: usize) -> Self {
         Self {
             builder: BlockBuilder::new(block_size),
-            first_key: Vec::new(),
-            last_key: Vec::new(),
+            first_key: KeyVec::new(),
+            last_key: KeyVec::new(),
             data: Vec::new(),
             meta: Vec::new(),
             block_size,
@@ -53,13 +53,13 @@ impl SsTableBuilder {
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
         self.keys_hashes
-            .push(farmhash::fingerprint32(key.into_inner()));
+            .push(farmhash::fingerprint32(key.key_ref()));
         // set first_key for the very first insert
         if self.data.is_empty() && self.builder.is_empty() {
-            self.first_key = key.to_key_vec().into_inner();
+            self.first_key = key.to_key_vec();
         }
         if self.builder.add(key, value) {
-            self.last_key = key.to_key_vec().into_inner()
+            self.last_key = key.to_key_vec();
         } else {
             let mut new_builder = BlockBuilder::new(self.block_size);
 
@@ -72,8 +72,8 @@ impl SsTableBuilder {
             let old_builder = std::mem::replace(&mut self.builder, new_builder);
             self.write_block(old_builder);
 
-            self.first_key = key.to_key_vec().into_inner();
-            self.last_key = key.to_key_vec().into_inner();
+            self.first_key = key.to_key_vec();
+            self.last_key = key.to_key_vec();
         }
     }
 
@@ -135,8 +135,8 @@ impl SsTableBuilder {
     fn write_block(&mut self, block: BlockBuilder) {
         let meta = BlockMeta {
             offset: self.data.len(),
-            first_key: KeyVec::from_vec(self.first_key.clone()).into_key_bytes(),
-            last_key: KeyVec::from_vec(self.last_key.clone()).into_key_bytes(),
+            first_key: self.first_key.clone().into_key_bytes(),
+            last_key: self.last_key.clone().into_key_bytes(),
         };
         let mut block_data = block.build().encode().to_vec();
         let checksum = crc32fast::hash(&block_data);

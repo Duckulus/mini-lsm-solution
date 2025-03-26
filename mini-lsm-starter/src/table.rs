@@ -51,10 +51,12 @@ impl BlockMeta {
         let start = buf.len();
         for meta in block_meta {
             buf.put_u32(meta.offset as u32);
-            buf.put_u16(meta.first_key.len() as u16);
-            buf.put(meta.first_key.clone().into_inner());
-            buf.put_u16(meta.last_key.len() as u16);
-            buf.put(meta.last_key.clone().into_inner());
+            buf.put_u16(meta.first_key.key_len() as u16);
+            buf.put(meta.first_key.clone().key_ref());
+            buf.put_u64(meta.first_key.ts());
+            buf.put_u16(meta.last_key.key_len() as u16);
+            buf.put(meta.last_key.clone().key_ref());
+            buf.put_u64(meta.last_key.ts());
         }
         let checksum = crc32fast::hash(&buf[start..]);
         buf.put_u32(checksum);
@@ -69,10 +71,14 @@ impl BlockMeta {
 
         while data.has_remaining() {
             let offset = data.get_u32() as usize;
-            let first_key_len = data.get_u16();
-            let first_key = KeyBytes::from_bytes(data.copy_to_bytes(first_key_len as usize));
-            let last_key_len = data.get_u16();
-            let last_key = KeyBytes::from_bytes(data.copy_to_bytes(last_key_len as usize));
+            let first_key_len = data.get_u16() as usize;
+            let first_key_data = data.copy_to_bytes(first_key_len);
+            let first_key_ts = data.get_u64();
+            let first_key = KeyBytes::from_bytes_with_ts(first_key_data, first_key_ts);
+            let last_key_len = data.get_u16() as usize;
+            let last_key_data = data.copy_to_bytes(last_key_len);
+            let last_key_ts = data.get_u64();
+            let last_key = KeyBytes::from_bytes_with_ts(last_key_data, last_key_ts);
             metas.push(BlockMeta {
                 offset,
                 first_key,

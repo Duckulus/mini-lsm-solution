@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::iterators::StorageIterator;
-use crate::key::KeySlice;
+use crate::key::{KeySlice, TS_DEFAULT};
 use crate::table::SsTableBuilder;
 use crate::wal::Wal;
 use anyhow::Result;
@@ -162,7 +162,7 @@ impl MemTable {
     pub fn flush(&self, _builder: &mut SsTableBuilder) -> Result<()> {
         for entry in self.map.iter() {
             _builder.add(
-                KeySlice::from_slice(entry.key().as_bytes()),
+                KeySlice::from_slice(entry.key().as_bytes(), TS_DEFAULT),
                 entry.value().as_bytes(),
             );
         }
@@ -212,7 +212,7 @@ impl StorageIterator for MemTableIterator {
     }
 
     fn key(&self) -> KeySlice {
-        KeySlice::from_slice(self.borrow_item().0.as_ref())
+        KeySlice::from_slice(self.borrow_item().0.as_ref(), TS_DEFAULT)
     }
 
     fn is_valid(&self) -> bool {

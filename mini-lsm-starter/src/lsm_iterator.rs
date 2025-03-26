@@ -14,7 +14,6 @@
 
 use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
-use crate::key::{KeyBytes, KeySlice};
 use crate::table::SsTableIterator;
 use crate::{
     iterators::{merge_iterator::MergeIterator, StorageIterator},
@@ -58,7 +57,7 @@ impl StorageIterator for LsmIterator {
     }
 
     fn key(&self) -> &[u8] {
-        self.inner.key().for_testing_key_ref()
+        self.inner.key().key_ref()
     }
 
     fn value(&self) -> &[u8] {
@@ -74,14 +73,8 @@ impl StorageIterator for LsmIterator {
         if self.inner.is_valid() {
             // need to check end bound manually because SsTableIterator does not support ranges
             let end = match &self.end_bound {
-                Bound::Included(bytes) => {
-                    KeySlice::from_slice(self.key())
-                        > KeyBytes::from_bytes(bytes.clone()).as_key_slice()
-                }
-                Bound::Excluded(bytes) => {
-                    KeySlice::from_slice(self.key())
-                        >= KeyBytes::from_bytes(bytes.clone()).as_key_slice()
-                }
+                Bound::Included(bytes) => self.key() > bytes.as_ref(),
+                Bound::Excluded(bytes) => self.key() >= bytes.as_ref(),
                 Bound::Unbounded => false,
             };
             if end {

@@ -14,7 +14,6 @@
 
 use crate::key::KeyBytes;
 use crate::lsm_storage::LsmStorageState;
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::cmp::max;
 
@@ -80,8 +79,8 @@ impl LeveledCompactionController {
         _in_level: usize,
     ) -> Vec<usize> {
         let mut overlapping = Vec::new();
-        let mut first_key = KeyBytes::from_bytes(Bytes::new());
-        let mut last_key = KeyBytes::from_bytes(Bytes::new());
+        let mut first_key = KeyBytes::new();
+        let mut last_key = KeyBytes::new();
         for sst_id in _sst_ids {
             let sst = _snapshot.sstables[sst_id].clone();
             if first_key.is_empty() || sst.first_key() < &first_key {
