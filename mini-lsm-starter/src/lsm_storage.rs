@@ -495,7 +495,11 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(self: &Arc<Self>, _key: &[u8]) -> Result<Option<Bytes>> {
-        let txn = self.mvcc.as_ref().unwrap().new_txn(self.clone(), self.options.serializable);
+        let txn = self
+            .mvcc
+            .as_ref()
+            .unwrap()
+            .new_txn(self.clone(), self.options.serializable);
         self.get_with_ts(_key, txn.read_ts)
     }
 
@@ -720,7 +724,11 @@ impl LsmStorageInner {
     }
 
     pub fn new_txn(self: &Arc<Self>) -> Result<Arc<Transaction>> {
-        Ok(self.mvcc.as_ref().unwrap().new_txn(self.clone(), self.options.serializable))
+        Ok(self
+            .mvcc
+            .as_ref()
+            .unwrap()
+            .new_txn(self.clone(), self.options.serializable))
     }
 
     /// Create an iterator over a range of keys.
@@ -729,7 +737,11 @@ impl LsmStorageInner {
         _lower: Bound<&[u8]>,
         _upper: Bound<&[u8]>,
     ) -> Result<TxnIterator> {
-        let txn = self.mvcc.as_ref().unwrap().new_txn(self.clone(), self.options.serializable);
+        let txn = self
+            .mvcc
+            .as_ref()
+            .unwrap()
+            .new_txn(self.clone(), self.options.serializable);
         TxnIterator::create(txn.clone(), self.scan_with_ts(_lower, _upper, txn.read_ts)?)
     }
 
