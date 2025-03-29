@@ -218,6 +218,14 @@ impl MemTable {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
+
+    pub fn max_ts(&self) -> u64 {
+        self.map
+            .iter()
+            .map(|entry| entry.key().ts())
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 type SkipMapRangeIter<'a> = crossbeam_skiplist::map::Range<

@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::{BlockMeta, FileObject, SsTable};
-use crate::key::KeyVec;
+use crate::key::{KeyVec, TS_DEFAULT};
 use crate::table::bloom::Bloom;
 use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
 use anyhow::Result;
@@ -31,6 +31,7 @@ pub struct SsTableBuilder {
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
     keys_hashes: Vec<u32>,
+    max_commit_ts: u64,
 }
 
 impl SsTableBuilder {
@@ -44,6 +45,7 @@ impl SsTableBuilder {
             meta: Vec::new(),
             block_size,
             keys_hashes: Vec::new(),
+            max_commit_ts: TS_DEFAULT,
         }
     }
 
@@ -58,6 +60,7 @@ impl SsTableBuilder {
         if self.data.is_empty() && self.builder.is_empty() {
             self.first_key = key.to_key_vec();
         }
+        self.max_commit_ts = self.max_commit_ts.max(key.ts());
         if self.builder.add(key, value) {
             self.last_key = key.to_key_vec();
         } else {
@@ -108,6 +111,8 @@ impl SsTableBuilder {
         bloom.encode(&mut data);
         data.put_u32(bloom_offset as u32);
 
+        data.put_u64(self.max_commit_ts);
+
         let file_object = FileObject::create(path.as_ref(), data)?;
 
         let table = SsTable {
@@ -127,7 +132,7 @@ impl SsTableBuilder {
             file: file_object,
             block_meta: self.meta,
             block_meta_offset: meta_offset,
-            max_ts: 0,
+            max_ts: self.max_commit_ts,
         };
         Ok(table)
     }

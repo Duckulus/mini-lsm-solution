@@ -34,23 +34,56 @@ pub struct LsmIterator {
     end_bound: Bound<Bytes>,
     reached_end: bool,
     prev_key: Bytes,
+    read_ts: u64,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(iter: LsmIteratorInner, end_bound: Bound<Bytes>) -> Result<Self> {
+    pub(crate) fn new(
+        iter: LsmIteratorInner,
+        end_bound: Bound<Bytes>,
+        read_ts: u64,
+    ) -> Result<Self> {
         let mut iter = Self {
             inner: iter,
             end_bound,
             reached_end: false,
             prev_key: Bytes::new(),
+            read_ts,
         };
-        while iter.inner.is_valid() && iter.inner.value().is_empty() {
-            iter.next()?;
-        }
+        Self::skip_invisible_and_deleted_keys(&mut iter)?;
         if iter.inner.is_valid() {
             iter.prev_key = Bytes::copy_from_slice(iter.inner.key().key_ref());
         }
+        Self::check_end_bound(&mut iter);
         Ok(iter)
+    }
+
+    fn skip_invisible_and_deleted_keys(&mut self) -> Result<()> {
+        while self.inner.is_valid() {
+            while self.inner.is_valid() && self.inner.key().ts() > self.read_ts {
+                self.inner.next()?;
+            }
+            if self.inner.is_valid() && self.inner.value().is_empty() {
+                let key = Bytes::copy_from_slice(self.inner.key().key_ref());
+                while self.inner.is_valid() && self.inner.key().key_ref() == key.as_ref() {
+                    self.inner.next()?;
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn check_end_bound(&mut self) {
+        if self.is_valid() {
+            // need to check end bound manually because SsTableIterator does not support ranges
+            self.reached_end = match &self.end_bound {
+                Bound::Included(bytes) => self.key() > bytes.as_ref(),
+                Bound::Excluded(bytes) => self.key() >= bytes.as_ref(),
+                Bound::Unbounded => false,
+            };
+        }
     }
 }
 
@@ -74,24 +107,12 @@ impl StorageIterator for LsmIterator {
         while self.inner.is_valid() && self.inner.key().key_ref() == self.prev_key.as_ref() {
             self.inner.next()?;
         }
-        while self.inner.is_valid() && self.inner.value().is_empty() {
-            let key = Bytes::copy_from_slice(self.inner.key().key_ref());
-            while self.inner.is_valid() && self.inner.key().key_ref() == key.as_ref() {
-                self.inner.next()?;
-            }
-        }
+
+        self.skip_invisible_and_deleted_keys()?;
 
         if self.inner.is_valid() {
             self.prev_key = Bytes::copy_from_slice(self.inner.key().key_ref());
-            // need to check end bound manually because SsTableIterator does not support ranges
-            let end = match &self.end_bound {
-                Bound::Included(bytes) => self.key() > bytes.as_ref(),
-                Bound::Excluded(bytes) => self.key() >= bytes.as_ref(),
-                Bound::Unbounded => false,
-            };
-            if end {
-                self.reached_end = true;
-            }
+            self.check_end_bound();
         }
         Ok(())
     }

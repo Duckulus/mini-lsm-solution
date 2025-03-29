@@ -149,8 +149,12 @@ impl SsTable {
 
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
-        let bloom_offset = file.read(file.1 - 4, 4)?.as_slice().get_u32() as u64;
-        let bloom_bytes = file.read(bloom_offset, file.1 - 4 - bloom_offset)?;
+        let bloom_end = file.1 - 8;
+
+        let max_commit_ts = file.read(bloom_end, 8)?.as_slice().get_u64();
+
+        let bloom_offset = file.read(bloom_end - 4, 4)?.as_slice().get_u32() as u64;
+        let bloom_bytes = file.read(bloom_offset, bloom_end - 4 - bloom_offset)?;
         let bloom = Bloom::decode(&bloom_bytes)?;
 
         let meta_offset = file.read(bloom_offset - 4, 4)?.as_slice().get_u32() as u64;
@@ -175,7 +179,7 @@ impl SsTable {
             first_key,
             last_key,
             bloom: Some(bloom),
-            max_ts: 0,
+            max_ts: max_commit_ts,
         };
         Ok(table)
     }
