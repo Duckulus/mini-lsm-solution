@@ -20,6 +20,7 @@ use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::key::{KeyBytes, KeySlice};
 use anyhow::Result;
 use bytes::{Buf, BufMut, Bytes};
 use crc32fast::Hasher;
@@ -42,7 +43,7 @@ impl Wal {
         })
     }
 
-    pub fn recover(_path: impl AsRef<Path>, _skiplist: &SkipMap<Bytes, Bytes>) -> Result<Self> {
+    pub fn recover(_path: impl AsRef<Path>, _skiplist: &SkipMap<KeyBytes, Bytes>) -> Result<Self> {
         let mut file = OpenOptions::new().read(true).write(true).open(_path)?;
         let mut buf = Vec::new();
         let data = file.read_to_end(&mut buf)?;
@@ -54,6 +55,8 @@ impl Wal {
             let key = Bytes::copy_from_slice(&data[..key_len]);
             hasher.update(&data[..key_len]);
             data.advance(key_len);
+            let ts = data.get_u64();
+            hasher.update(&ts.to_be_bytes());
             let value_len = data.get_u16() as usize;
             hasher.update(&(value_len as u16).to_be_bytes());
             let value = Bytes::copy_from_slice(&data[..value_len]);
@@ -61,18 +64,19 @@ impl Wal {
             data.advance(value_len);
             let checksum = data.get_u32();
             assert_eq!(hasher.finalize(), checksum);
-            _skiplist.insert(key, value);
+            _skiplist.insert(KeyBytes::from_bytes_with_ts(key, ts), value);
         }
         Ok(Self {
             file: Arc::new(Mutex::new(BufWriter::new(file))),
         })
     }
 
-    pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
+    pub fn put(&self, _key: KeySlice, _value: &[u8]) -> Result<()> {
         let mut file = self.file.lock();
-        let mut buf: Vec<u8> = Vec::with_capacity(_key.len() + _value.len() + 2 + 2);
-        buf.put_u16(_key.len() as u16);
-        buf.put_slice(_key);
+        let mut buf: Vec<u8> = Vec::with_capacity(_key.raw_len() + _value.len() + 2 + 2);
+        buf.put_u16(_key.key_len() as u16);
+        buf.put_slice(_key.key_ref());
+        buf.put_u64(_key.ts());
         buf.put_u16(_value.len() as u16);
         buf.put_slice(_value);
         let checksum = crc32fast::hash(&buf);

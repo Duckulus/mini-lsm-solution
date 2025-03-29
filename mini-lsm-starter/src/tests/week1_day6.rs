@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{ops::Bound, sync::Arc, time::Duration};
-
 use bytes::Bytes;
+use std::{ops::Bound, sync::Arc, time::Duration};
 use tempfile::tempdir;
 
 use self::harness::{check_lsm_iter_result_by_key, sync};

@@ -29,6 +29,7 @@ use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
 use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 use anyhow::Result;
+use bytes::Bytes;
 pub use leveled::{LeveledCompactionController, LeveledCompactionOptions, LeveledCompactionTask};
 use serde::{Deserialize, Serialize};
 pub use simple_leveled::{
@@ -156,12 +157,11 @@ impl LsmStorageInner {
     ) -> Result<Vec<Arc<SsTable>>> {
         let mut new_tables = Vec::new();
         let mut current_builder = SsTableBuilder::new(self.options.block_size);
+        let mut last_key: Bytes = Bytes::new();
         while iter.is_valid() {
-            if iter.value().is_empty() {
-                iter.next()?;
-                continue;
-            }
-            if current_builder.estimated_size() > self.options.target_sst_size {
+            if current_builder.estimated_size() > self.options.target_sst_size
+                && iter.key().key_ref() != last_key.as_ref()
+            {
                 let id = self.next_sst_id();
                 let builder = std::mem::replace(
                     &mut current_builder,
@@ -171,7 +171,9 @@ impl LsmStorageInner {
                     builder.build(id, Some(self.block_cache.clone()), self.path_of_sst(id))?;
                 new_tables.push(Arc::new(table));
             } else {
-                current_builder.add(iter.key(), iter.value());
+                let key = iter.key();
+                last_key = Bytes::copy_from_slice(key.key_ref());
+                current_builder.add(key, iter.value());
                 iter.next()?;
             }
         }
