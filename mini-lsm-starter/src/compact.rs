@@ -154,11 +154,30 @@ impl LsmStorageInner {
     fn gen_ssts_from_iter(
         &self,
         mut iter: impl for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
+        compact_to_bottom_level: bool,
     ) -> Result<Vec<Arc<SsTable>>> {
         let mut new_tables = Vec::new();
         let mut current_builder = SsTableBuilder::new(self.options.block_size);
         let mut last_key: Bytes = Bytes::new();
+        let mut latest: Vec<u8> = Vec::new();
         while iter.is_valid() {
+            if iter.key().ts() <= self.mvcc.as_ref().unwrap().watermark() {
+                if latest.as_slice() == iter.key().key_ref() {
+                    iter.next()?;
+                    continue;
+                }
+                latest.clear();
+                latest.extend(iter.key().key_ref());
+            }
+
+            if iter.key().ts() <= self.mvcc.as_ref().unwrap().watermark()
+                && iter.value().is_empty()
+                && compact_to_bottom_level
+            {
+                iter.next()?;
+                continue;
+            }
+
             if current_builder.estimated_size() > self.options.target_sst_size
                 && iter.key().key_ref() != last_key.as_ref()
             {
@@ -170,12 +189,11 @@ impl LsmStorageInner {
                 let table =
                     builder.build(id, Some(self.block_cache.clone()), self.path_of_sst(id))?;
                 new_tables.push(Arc::new(table));
-            } else {
-                let key = iter.key();
-                last_key = Bytes::copy_from_slice(key.key_ref());
-                current_builder.add(key, iter.value());
-                iter.next()?;
             }
+            let key = iter.key();
+            last_key = Bytes::copy_from_slice(key.key_ref());
+            current_builder.add(key, iter.value());
+            iter.next()?;
         }
         let id = self.next_sst_id();
         let table =
@@ -193,7 +211,10 @@ impl LsmStorageInner {
             } => {
                 let l0_merge_iter = create_merge_iter_from_ids(&state, l0_sstables)?;
                 let l1_iter = create_concat_iter_from_ids(&state, l1_sstables)?;
-                self.gen_ssts_from_iter(TwoMergeIterator::create(l0_merge_iter, l1_iter)?)
+                self.gen_ssts_from_iter(
+                    TwoMergeIterator::create(l0_merge_iter, l1_iter)?,
+                    _task.compact_to_bottom_level(),
+                )
             }
             CompactionTask::Simple(SimpleLeveledCompactionTask {
                 upper_level,
@@ -210,11 +231,17 @@ impl LsmStorageInner {
                 if upper_level.is_some() {
                     let upper_iter = create_concat_iter_from_ids(&state, upper_level_sst_ids)?;
                     let lower_iter = create_concat_iter_from_ids(&state, lower_level_sst_ids)?;
-                    self.gen_ssts_from_iter(TwoMergeIterator::create(upper_iter, lower_iter)?)
+                    self.gen_ssts_from_iter(
+                        TwoMergeIterator::create(upper_iter, lower_iter)?,
+                        _task.compact_to_bottom_level(),
+                    )
                 } else {
                     let upper_iter = create_merge_iter_from_ids(&state, upper_level_sst_ids)?;
                     let lower_iter = create_concat_iter_from_ids(&state, lower_level_sst_ids)?;
-                    self.gen_ssts_from_iter(TwoMergeIterator::create(upper_iter, lower_iter)?)
+                    self.gen_ssts_from_iter(
+                        TwoMergeIterator::create(upper_iter, lower_iter)?,
+                        _task.compact_to_bottom_level(),
+                    )
                 }
             }
             CompactionTask::Tiered(task) => {
@@ -224,7 +251,10 @@ impl LsmStorageInner {
                     iters.push(Box::from(iter));
                 }
 
-                self.gen_ssts_from_iter(MergeIterator::create(iters))
+                self.gen_ssts_from_iter(
+                    MergeIterator::create(iters),
+                    _task.compact_to_bottom_level(),
+                )
             }
         }
     }

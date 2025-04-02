@@ -81,6 +81,7 @@ fn test_multiple_compacted_ssts_leveled() {
         let (key, val) = key_value_pair_with_target_size(i, 20 * 1024);
         storage.put(&key, &val).unwrap();
     }
+    println!("{}", storage.inner.mvcc.as_ref().unwrap().watermark());
 
     let mut prev_snapshot = storage.inner.state.read().clone();
     while {
