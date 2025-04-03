@@ -598,27 +598,20 @@ impl LsmStorageInner {
     pub fn write_batch<T: AsRef<[u8]>>(&self, _batch: &[WriteBatchRecord<T>]) -> Result<()> {
         let guard = self.mvcc.as_ref().unwrap().write_lock.lock();
         let ts = self.mvcc.as_ref().unwrap().latest_commit_ts() + 1;
-        for record in _batch {
-            match record {
-                WriteBatchRecord::Put(k, v) => {
-                    self.state
-                        .read()
-                        .memtable
-                        .put(KeySlice::from_slice(k.as_ref(), ts), v.as_ref())?;
-                }
-                WriteBatchRecord::Del(k) => {
-                    self.state
-                        .read()
-                        .memtable
-                        .put(KeySlice::from_slice(k.as_ref(), ts), &[])?;
-                }
-            }
+        let empty: &[u8] = &[];
+        let records: Vec<(KeySlice, &[u8])> = _batch
+            .iter()
+            .map(|record| match record {
+                WriteBatchRecord::Put(k, v) => (KeySlice::from_slice(k.as_ref(), ts), v.as_ref()),
+                WriteBatchRecord::Del(k) => (KeySlice::from_slice(k.as_ref(), ts), &[] as &[u8]),
+            })
+            .collect();
+        self.state.read().memtable.put_batch(&records)?;
+        if self.state.read().memtable.approximate_size() >= self.options.target_sst_size {
+            let state_lock = &self.state_lock.lock();
+            // check again with lock to ensure no 2 threads try to freeze at the same time
             if self.state.read().memtable.approximate_size() >= self.options.target_sst_size {
-                let state_lock = &self.state_lock.lock();
-                // check again with lock to ensure no 2 threads try to freeze at the same time
-                if self.state.read().memtable.approximate_size() >= self.options.target_sst_size {
-                    self.force_freeze_memtable(state_lock)?;
-                }
+                self.force_freeze_memtable(state_lock)?;
             }
         }
         self.mvcc.as_ref().unwrap().update_commit_ts(ts);
@@ -745,7 +738,7 @@ impl LsmStorageInner {
             .as_ref()
             .unwrap()
             .new_txn(self.clone(), self.options.serializable);
-        TxnIterator::create(txn.clone(), self.scan_with_ts(_lower, _upper, txn.read_ts)?)
+        txn.scan(_lower, _upper)
     }
 
     pub fn scan_with_ts(

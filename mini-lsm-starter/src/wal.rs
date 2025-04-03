@@ -49,22 +49,27 @@ impl Wal {
         let data = file.read_to_end(&mut buf)?;
         let mut data = &buf[..];
         while data.has_remaining() {
+            let batch_size = data.get_u32() as usize;
+            let mut body = &data[..batch_size];
             let mut hasher = Hasher::new();
-            let key_len = data.get_u16() as usize;
-            hasher.update(&(key_len as u16).to_be_bytes());
-            let key = Bytes::copy_from_slice(&data[..key_len]);
-            hasher.update(&data[..key_len]);
-            data.advance(key_len);
-            let ts = data.get_u64();
-            hasher.update(&ts.to_be_bytes());
-            let value_len = data.get_u16() as usize;
-            hasher.update(&(value_len as u16).to_be_bytes());
-            let value = Bytes::copy_from_slice(&data[..value_len]);
-            hasher.update(&data[..value_len]);
-            data.advance(value_len);
+            while body.has_remaining() {
+                let key_len = body.get_u16() as usize;
+                hasher.update(&(key_len as u16).to_be_bytes());
+                let key = Bytes::copy_from_slice(&body[..key_len]);
+                hasher.update(&body[..key_len]);
+                body.advance(key_len);
+                let ts = body.get_u64();
+                hasher.update(&ts.to_be_bytes());
+                let value_len = body.get_u16() as usize;
+                hasher.update(&(value_len as u16).to_be_bytes());
+                let value = Bytes::copy_from_slice(&body[..value_len]);
+                hasher.update(&body[..value_len]);
+                body.advance(value_len);
+                _skiplist.insert(KeyBytes::from_bytes_with_ts(key, ts), value);
+            }
+            data.advance(batch_size);
             let checksum = data.get_u32();
             assert_eq!(hasher.finalize(), checksum);
-            _skiplist.insert(KeyBytes::from_bytes_with_ts(key, ts), value);
         }
         Ok(Self {
             file: Arc::new(Mutex::new(BufWriter::new(file))),
@@ -86,8 +91,22 @@ impl Wal {
     }
 
     /// Implement this in week 3, day 5.
-    pub fn put_batch(&self, _data: &[(&[u8], &[u8])]) -> Result<()> {
-        unimplemented!()
+    pub fn put_batch(&self, _data: &[(KeySlice, &[u8])]) -> Result<()> {
+        let mut file = self.file.lock();
+        let mut body: Vec<u8> = Vec::new();
+        for entry in _data {
+            body.put_u16(entry.0.key_len() as u16);
+            body.put(entry.0.key_ref());
+            body.put_u64(entry.0.ts());
+            body.put_u16(entry.1.len() as u16);
+            body.put(entry.1);
+        }
+        let checksum = crc32fast::hash(&body);
+
+        file.write_all(&(body.len() as u32).to_be_bytes())?;
+        file.write_all(&body)?;
+        file.write_all(&checksum.to_be_bytes())?;
+        Ok(())
     }
 
     pub fn sync(&self) -> Result<()> {
