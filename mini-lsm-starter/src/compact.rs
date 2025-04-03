@@ -168,6 +168,18 @@ impl LsmStorageInner {
                 }
                 latest.clear();
                 latest.extend(iter.key().key_ref());
+                // compaction filter check
+                let mut matches_filter = false;
+                for filter in self.compaction_filters.lock().iter() {
+                    if filter.matches(iter.key().key_ref()) {
+                        matches_filter = true;
+                        break;
+                    }
+                }
+                if matches_filter {
+                    iter.next()?;
+                    continue;
+                }
             }
 
             if iter.key().ts() <= self.mvcc.as_ref().unwrap().watermark()
