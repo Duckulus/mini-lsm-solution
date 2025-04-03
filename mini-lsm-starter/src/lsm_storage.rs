@@ -219,7 +219,7 @@ impl MiniLsm {
     }
 
     pub fn write_batch<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<()> {
-        self.inner.write_batch(batch)
+        self.inner.clone().write_batch(batch)
     }
 
     pub fn add_compaction_filter(&self, compaction_filter: CompactionFilter) {
@@ -231,11 +231,11 @@ impl MiniLsm {
     }
 
     pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        self.inner.put(key, value)
+        self.inner.clone().put(key, value)
     }
 
     pub fn delete(&self, key: &[u8]) -> Result<()> {
-        self.inner.delete(key)
+        self.inner.clone().delete(key)
     }
 
     pub fn sync(&self) -> Result<()> {
@@ -498,11 +498,7 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(self: &Arc<Self>, _key: &[u8]) -> Result<Option<Bytes>> {
-        let txn = self
-            .mvcc
-            .as_ref()
-            .unwrap()
-            .new_txn(self.clone(), self.options.serializable);
+        let txn = self.mvcc().new_txn(self.clone(), self.options.serializable);
         self.get_with_ts(_key, txn.read_ts)
     }
 
@@ -595,7 +591,26 @@ impl LsmStorageInner {
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
-    pub fn write_batch<T: AsRef<[u8]>>(&self, _batch: &[WriteBatchRecord<T>]) -> Result<()> {
+    pub fn write_batch<T: AsRef<[u8]>>(
+        self: &Arc<Self>,
+        _batch: &[WriteBatchRecord<T>],
+    ) -> Result<()> {
+        if self.options.serializable {
+            let txn = self.mvcc().new_txn(self.clone(), true);
+            for record in _batch {
+                match record {
+                    WriteBatchRecord::Put(k, v) => txn.put(k.as_ref(), v.as_ref()),
+                    WriteBatchRecord::Del(k) => txn.delete(k.as_ref()),
+                }
+            }
+            txn.commit()?;
+        } else {
+            self.write_batch_inner(_batch)?;
+        }
+        Ok(())
+    }
+
+    pub fn write_batch_inner<T: AsRef<[u8]>>(&self, _batch: &[WriteBatchRecord<T>]) -> Result<u64> {
         let guard = self.mvcc.as_ref().unwrap().write_lock.lock();
         let ts = self.mvcc.as_ref().unwrap().latest_commit_ts() + 1;
         let empty: &[u8] = &[];
@@ -615,17 +630,17 @@ impl LsmStorageInner {
             }
         }
         self.mvcc.as_ref().unwrap().update_commit_ts(ts);
-        Ok(())
+        Ok(ts)
     }
 
     /// Put a key-value pair into the storage by writing into the current memtable.
-    pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
+    pub fn put(self: &Arc<Self>, _key: &[u8], _value: &[u8]) -> Result<()> {
         self.write_batch(&[WriteBatchRecord::Put(_key, _value)])?;
         Ok(())
     }
 
     /// Remove a key from the storage by writing an empty value.
-    pub fn delete(&self, _key: &[u8]) -> Result<()> {
+    pub fn delete(self: &Arc<Self>, _key: &[u8]) -> Result<()> {
         self.write_batch(&[WriteBatchRecord::Del(_key)])?;
         Ok(())
     }

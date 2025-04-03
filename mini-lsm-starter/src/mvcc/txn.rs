@@ -18,12 +18,13 @@
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::lsm_storage::WriteBatchRecord;
 use crate::mem_table::map_bound_old;
+use crate::mvcc::CommittedTxnData;
 use crate::{
     iterators::StorageIterator,
     lsm_iterator::{FusedIterator, LsmIterator},
     lsm_storage::LsmStorageInner,
 };
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bytes::Bytes;
 use crossbeam_skiplist::map::Entry;
 use crossbeam_skiplist::SkipMap;
@@ -50,6 +51,11 @@ impl Transaction {
         if self.committed.load(Ordering::Relaxed) {
             panic!("Transaction used after commit")
         }
+        if let Some(hashes) = self.key_hashes.as_ref() {
+            let mut guard = hashes.lock();
+            guard.1.insert(farmhash::hash32(key));
+        }
+
         if let Some(entry) = self.local_storage.get(key) {
             return if entry.value().is_empty() {
                 Ok(None)
@@ -65,6 +71,20 @@ impl Transaction {
         if self.committed.load(Ordering::Relaxed) {
             panic!("Transaction used after commit")
         }
+        // scan read set
+        if let Some(hashes) = self.key_hashes.as_ref() {
+            let mut guard = hashes.lock();
+            let local_iter = TxnLocalIterator::create(self.clone(), lower, upper);
+            let lsm_iter = self.inner.scan_with_ts(lower, upper, self.read_ts)?;
+            let mut txn_iter = TxnIterator::create(
+                self.clone(),
+                TwoMergeIterator::create(local_iter, lsm_iter)?,
+            )?;
+            while txn_iter.is_valid() {
+                guard.1.insert(farmhash::hash32(txn_iter.key()));
+                txn_iter.next()?;
+            }
+        }
         let local_iter = TxnLocalIterator::create(self.clone(), lower, upper);
         let lsm_iter = self.inner.scan_with_ts(lower, upper, self.read_ts)?;
         TxnIterator::create(
@@ -77,22 +97,24 @@ impl Transaction {
         if self.committed.load(Ordering::Relaxed) {
             panic!("Transaction used after commit")
         }
+        if let Some(hashes) = self.key_hashes.as_ref() {
+            let mut guard = hashes.lock();
+            guard.0.insert(farmhash::hash32(key));
+        }
+
         self.local_storage
             .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
     }
 
     pub fn delete(&self, key: &[u8]) {
-        if self.committed.load(Ordering::Relaxed) {
-            panic!("Transaction used after commit")
-        }
-        self.local_storage
-            .insert(Bytes::copy_from_slice(key), Bytes::new());
+        self.put(key, &[])
     }
 
     pub fn commit(&self) -> Result<()> {
         if self.committed.swap(true, Ordering::Relaxed) {
-            return Ok(());
+            bail!("Tried Committing a transaction that is already commited");
         }
+
         let mut records = Vec::with_capacity(self.local_storage.len());
         for entry in self.local_storage.iter() {
             if entry.value().is_empty() {
@@ -104,7 +126,37 @@ impl Transaction {
                 ))
             }
         }
-        self.inner.write_batch(&records)?;
+        let guard = self.inner.mvcc().commit_lock.lock();
+        if let Some(hashes) = self.key_hashes.as_ref() {
+            // serializable verification
+            let commited_txns = self.inner.mvcc().committed_txns.lock();
+            let expected_commit_ts = self.inner.mvcc().latest_commit_ts() + 1;
+            let guard = hashes.lock();
+            // no verification necessary if write set is empty
+            if !guard.0.is_empty() {
+                for commited in commited_txns.range(self.read_ts + 1..expected_commit_ts) {
+                    let mut intersect = commited.1.key_hashes.intersection(&guard.1);
+                    if intersect.next().is_some() {
+                        bail!("Transaction Verification failed: Found intersection between read set and write set of commited txn");
+                    }
+                }
+            }
+        }
+
+        let commit_ts = self.inner.clone().write_batch_inner(&records)?;
+        if let Some(hashes) = self.key_hashes.as_ref() {
+            let mut commited_txns = self.inner.mvcc().committed_txns.lock();
+            commited_txns.insert(
+                commit_ts,
+                CommittedTxnData {
+                    key_hashes: hashes.lock().0.clone(),
+                    read_ts: self.read_ts,
+                    commit_ts,
+                },
+            );
+            commited_txns.retain(|key, _| *key >= self.inner.mvcc().watermark());
+        }
+
         Ok(())
     }
 }

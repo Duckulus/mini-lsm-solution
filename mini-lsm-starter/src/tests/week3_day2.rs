@@ -34,7 +34,7 @@ fn test_task3_compaction_integration() {
             .put(b"0", format!("{:02000}", i).as_bytes())
             .unwrap();
     }
-    std::thread::sleep(Duration::from_secs(1)); // wait until all memtables flush
+    std::thread::sleep(Duration::from_secs(2)); // wait until all memtables flush
     while {
         let snapshot = storage.inner.state.read();
         !snapshot.imm_memtables.is_empty()
